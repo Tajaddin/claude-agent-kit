@@ -1,0 +1,13 @@
+services:
+  agent-kit:
+    build: .
+    image: claude-agent-kit:latest
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    command: ["What is 17 times 23, and what is prompt caching?"]
+
+  bench:
+    build: .
+    image: claude-agent-kit:latest
+    entrypoint: ["python", "-m", "benchmarks.cache_benchmark"]
+    command: ["--mode", "mock"]

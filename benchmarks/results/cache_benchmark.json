@@ -1,0 +1,39 @@
+{
+  "mode": "mock",
+  "caching_on": {
+    "mode": "mock",
+    "caching": true,
+    "n_turns": 10,
+    "n_api_requests": 10,
+    "elapsed_ms": 0.763700001698453,
+    "cache_creation_input_tokens": 2500,
+    "cache_read_input_tokens": 22500,
+    "fresh_input_tokens": 400,
+    "output_tokens": 800,
+    "hit_rate_pct": 90.0,
+    "cost_with_cache_usd": 0.009775,
+    "cost_without_cache_usd": 0.0294,
+    "savings_pct": 66.75,
+    "input_tokens_cached_pct": 90.0
+  },
+  "caching_off": {
+    "mode": "mock",
+    "caching": false,
+    "n_turns": 10,
+    "n_api_requests": 10,
+    "elapsed_ms": 0.8097000027191825,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "fresh_input_tokens": 4000,
+    "output_tokens": 800,
+    "hit_rate_pct": 0.0,
+    "cost_with_cache_usd": 0.008,
+    "cost_without_cache_usd": 0.008,
+    "savings_pct": 0.0,
+    "input_tokens_cached_pct": 0.0
+  },
+  "headline": {
+    "cache_hit_rate_pct": 90.0,
+    "input_token_cost_reduction_pct": 66.75
+  }
+}
