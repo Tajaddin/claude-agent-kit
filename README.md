@@ -1,6 +1,6 @@
 # claude-agent-kit
 
-> Production patterns for the Anthropic Agent SDK. **66.75% input-token cost reduction at 90% cache hit rate** on a 10-turn conversation, reproducible in 2 seconds with no API key. Prompt caching, memory tool, parallel tool execution, conversation compaction in one minimal package.
+> Production patterns for the Anthropic Agent SDK. **Live Haiku 4.5: 60% cache hit rate, 12% cost reduction on a 10-turn conversation with a 2300-token prefix.** Mock projection at production prefix size (2500 tokens): 90% hit / 66.75% reduction. Prompt caching, memory tool, parallel tool execution, conversation compaction in one minimal package.
 
 [![ci](https://github.com/Tajaddin/claude-agent-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/Tajaddin/claude-agent-kit/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -9,23 +9,22 @@
 
 ## Hero metrics
 
-Reproducible in 2 seconds: `python -m benchmarks.cache_benchmark --mode mock`
+Two benchmarks, both reproducible:
+- `python -m benchmarks.cache_benchmark --mode mock` (2 seconds, no API key)
+- `python -m benchmarks.cache_benchmark --mode live --turns 10` (40-60 seconds, needs ANTHROPIC_API_KEY, ~$0.05)
 
-| 10-turn conversation, production-shape (2500-token cacheable prefix) | Without cache | With cache | Delta |
+| Source | Cacheable prefix size | Cache hit rate | Input-token cost reduction |
 |---|---:|---:|---:|
-| **Cache hit rate** | 0% | **90.0%** | 9 cache reads out of 10 calls |
-| **Input-token cost reduction** | baseline | **66.75%** | most input is now read at 10% of the normal rate |
-| **API calls per 10-turn conversation** | 10 | 10 | identical behavior, different billing |
+| **Live on Haiku 4.5** (2026-05-20) | ~2334 tokens | **60.26%** | **11.86%** |
+| Mock projection (production-shape) | 2500 tokens | 90.0% | 66.75% |
 
-The hero claim is the cost reduction. Hit rate is mechanical (turn 1 creates, turns 2-10 read). The cost number is what your finance team sees on the invoice.
+Both numbers are real measurements; they differ because:
+1. The mock counts only the most-recent user message as fresh input. The live API also adds assistant + tool-result blocks between turns to the fresh-input column. Each tool round trip adds ~50-300 tokens of fresh input the cache cannot serve.
+2. With a longer system prompt (e.g. 9000 tokens), the live hit rate climbs to ~100% on every turn after the first (verified by the diagnostic in `benchmarks/results/cache_benchmark.json`).
 
-Same benchmark on the **live** Anthropic API (Haiku 4.5) runs in roughly 8 seconds and costs about $0.03:
+Anthropic's prompt-cache floor for Claude Haiku 4.5 is **2048 input tokens** in the cached prefix. Below that, `cache_control` is silently ignored. The padded `FEW_SHOT` in `benchmarks/cache_benchmark.py` crosses that floor by design; if your production agent's system prompt is shorter, expand it (with rules, examples, or a few-shot block) before enabling caching.
 
-```bash
-python -m benchmarks.cache_benchmark --mode live --turns 10
-```
-
-It writes the same JSON schema to `benchmarks/results/cache_benchmark.json` so the mock and live runs are directly comparable.
+The cost number is what your finance team sees on the invoice.
 
 ## What you get
 
