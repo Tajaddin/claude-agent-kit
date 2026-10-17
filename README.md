@@ -1,6 +1,6 @@
 # claude-agent-kit
 
-> Production patterns for the Anthropic Agent SDK. **Live Haiku 4.5: 60% cache hit rate, 12% cost reduction on a 10-turn conversation with a 2300-token prefix.** Mock projection at production prefix size (2500 tokens): 90% hit / 66.75% reduction. Prompt caching, memory tool, parallel tool execution, conversation compaction in one minimal package.
+> Production patterns for agents on the Anthropic API. **Live Haiku 4.5: 60% cache hit rate, 12% cost reduction on a 10-turn conversation with a 2300-token prefix.** Mock projection at production prefix size (2500 tokens): 90% hit / 66.75% reduction. Prompt caching, memory tool, parallel tool execution, conversation compaction in one minimal package.
 
 [![ci](https://github.com/Tajaddin/claude-agent-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/Tajaddin/claude-agent-kit/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -28,7 +28,7 @@ The cost number is what your finance team sees on the invoice.
 
 ## What you get
 
-Five small modules. Each one solves a problem the Anthropic Agent SDK leaves to you:
+Five small modules. Each one solves a problem the Anthropic Python SDK leaves to you:
 
 | Module | Problem solved |
 |---|---|
