@@ -38,16 +38,6 @@ Five small modules. Each one solves a problem the Anthropic Python SDK leaves to
 | `agent.py` | The tool-use loop. Runs the `tool_use` blocks of one response concurrently (one thread each, per-tool timeout, results in call order) and sends the `tool_result` blocks back. Stops on `end_turn` or a hard iteration cap. |
 | `llm.py` | `AnthropicClient` and a `MockClient` that simulates cache accounting from a fingerprint of the system blocks and tools. |
 
-## Why this matters for production
-
-Recruiter signal this maps to:
-- **Anthropic SDK production usage** (Caylent, M3 USA, ERP Suites, Pair Team, forgd.ai)
-- **Prompt caching** (mentioned in 6+ Senior AI Engineer JDs in 2026 for cost-sensitive workloads)
-- **Memory + tool use** (Sekai, Mango Languages, Cohere Agent Infrastructure)
-- **Conversation compaction** (every long-context agent JD eventually)
-
-The Anthropic SDK gives you a Messages API. This kit shows you what to put *into* that API.
-
 ## Quick start
 
 ```bash
