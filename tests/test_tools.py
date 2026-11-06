@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -129,3 +130,32 @@ class TestDispatch:
         result = dispatch_tool([Boom()], {"type": "tool_use", "id": "x", "name": "boom"})
         assert result.is_error is True
         assert "explosion" in result.content
+
+
+class _SleepTool:
+    def __init__(self, name: str, seconds: float, reply: str = "done"):
+        self.name = name
+        self.description = "sleeps"
+        self.input_schema = {"type": "object", "properties": {}}
+        self.seconds = seconds
+        self.reply = reply
+
+    def execute(self, params):
+        time.sleep(self.seconds)
+        return self.reply
+
+
+class TestDispatchTimeout:
+    def test_slow_tool_returns_an_error_result_at_the_timeout(self):
+        block = {"type": "tool_use", "id": "slow_1", "name": "slow", "input": {}}
+        start = time.perf_counter()
+        result = dispatch_tool([_SleepTool("slow", 5.0)], block, timeout=0.2)
+        assert time.perf_counter() - start < 2.0
+        assert result.is_error is True
+        assert result.tool_use_id == "slow_1"
+        assert "timed out after 0.2" in result.content
+
+    def test_fast_tool_is_unaffected_by_the_timeout(self):
+        block = {"type": "tool_use", "id": "f", "name": "fast", "input": {}}
+        result = dispatch_tool([_SleepTool("fast", 0.0, reply="ok")], block, timeout=5.0)
+        assert (result.content, result.is_error) == ("ok", False)

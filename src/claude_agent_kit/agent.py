@@ -41,6 +41,9 @@ class AgentConfig:
     temperature: float = 0.0
     enable_caching: bool = True
     compaction_policy: CompactionPolicy = field(default_factory=CompactionPolicy)
+    # A tool call still running after this many seconds is answered with an
+    # is_error tool_result. None waits forever.
+    tool_timeout_s: float | None = 30.0
 
 
 @dataclass
@@ -147,7 +150,9 @@ class Agent:
         results = []
         for block in content:
             if isinstance(block, dict) and block.get("type") == "tool_use":
-                results.append(dispatch_tool(self.config.tools, block))
+                results.append(
+                    dispatch_tool(self.config.tools, block, timeout=self.config.tool_timeout_s)
+                )
         return results
 
     @staticmethod

@@ -1,9 +1,11 @@
 """Agent loop tests with MockClient."""
 from __future__ import annotations
 
+import time
+
 from claude_agent_kit.agent import Agent, AgentConfig
 from claude_agent_kit.llm import MockClient
-from claude_agent_kit.memory import InMemoryStore
+from claude_agent_kit.memory import InMemoryStore, SqliteMemoryStore
 from claude_agent_kit.tools import (
     CalculatorTool,
     MemoryRecallTool,
@@ -115,3 +117,39 @@ class TestAgentCompaction:
         assert agent.config.compaction_policy.max_history_chars == 50
         # History should be trimmed (latest 2 user/assistant pairs plus tool results).
         assert len(agent.history) <= 6
+
+
+class TestToolExecution:
+    def test_slow_tool_times_out_and_the_turn_continues(self):
+        class Slow:
+            name = "slow"
+            description = "sleeps"
+            input_schema = {"type": "object", "properties": {}}
+
+            def execute(self, params):
+                time.sleep(5)
+                return "late"
+
+        script = [
+            ("go", [{"type": "tool_use", "id": "s1", "name": "slow", "input": {}}]),
+            ("tool_result", [{"type": "text", "text": "gave up"}]),
+        ]
+        config = AgentConfig(system_blocks=["sys"], tools=[Slow()], tool_timeout_s=0.2)
+        agent = Agent(MockClient(script=script), config)
+        start = time.perf_counter()
+        turn = agent.run_turn("go")
+        assert time.perf_counter() - start < 2.0
+        assert turn.assistant_text == "gave up"
+        assert turn.tool_results[0]["is_error"] is True
+        assert "timed out" in turn.tool_results[0]["content"]
+
+    def test_sqlite_memory_tools_work_when_tools_run_off_the_caller_thread(self, tmp_path):
+        memory = SqliteMemoryStore(tmp_path / "agent.db")
+        script = [
+            ("remember", [{"type": "tool_use", "id": "m1", "name": "memory_save", "input": {"key": "user.city", "value": "Tampa"}}]),
+            ("tool_result", [{"type": "text", "text": "saved"}]),
+        ]
+        config = AgentConfig(system_blocks=["sys"], tools=[MemorySaveTool(store=memory)])
+        turn = Agent(MockClient(script=script), config, memory=memory).run_turn("remember my city")
+        assert turn.tool_results[0].get("is_error") is not True, turn.tool_results
+        assert memory.recall("user.city") == "Tampa"
