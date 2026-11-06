@@ -1,4 +1,4 @@
-"""Production patterns for Claude Agent SDK.
+"""Production patterns for agents on the Anthropic API.
 
 Prompt caching, memory tool, parallel tool execution, conversation compaction.
 """

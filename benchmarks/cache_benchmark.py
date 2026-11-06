@@ -7,8 +7,10 @@ should hit the cache from turn 2 onward.
 Two modes:
 - live: hits real Anthropic API. Needs ANTHROPIC_API_KEY. Costs ~$0.03 in
   Haiku 4.5 tokens.
-- mock: uses MockClient which simulates cache accounting with the same
-  prefix-fingerprint logic real Anthropic exposes. Free, deterministic.
+- mock: uses MockClient, which simulates cache accounting from a
+  fingerprint of the system blocks and tools and bills only the newest
+  message as fresh input (as if the history were cached, which the agent
+  does not request). Free, deterministic; a simulation, not a measurement.
 
 Hero number: input-token cost reduction with caching vs without. Theoretical
 maximum on a 10-turn conversation with a ~200-token prefix is ~85% savings

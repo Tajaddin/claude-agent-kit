@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "claude-agent-kit"
 version = "0.1.0"
-description = "Production patterns for Claude Agent SDK. Prompt caching, memory tool, parallel tool execution, conversation compaction. Hero: ~80% input-token reduction across a 10-turn conversation."
+description = "Production patterns for agents on the Anthropic API: prompt caching, memory tool, parallel tool execution, conversation compaction."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

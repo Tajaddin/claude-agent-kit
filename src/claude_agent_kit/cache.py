@@ -9,16 +9,12 @@ The helpers here build cache-marked block lists from plain text. They are
 small on purpose: the value is in *where* you place the breakpoints, not in
 hiding the API behind an abstraction.
 
-Breakpoint strategy this module enforces (proven on multi-turn agents):
+Breakpoints the agent sets with these helpers:
 
     System block (stable persona + rules)             [cached]
     Tool definitions (stable schemas)                 [cached]
     Few-shot examples (stable canonical demos)        [cached, 5min TTL]
-    Conversation history up to the last user turn     [cached, last block]
-    Current user turn                                 [NOT cached]
-
-The last user turn must never be cached. If you cache it, Anthropic counts
-it as a fresh prefix and you pay full price for everything that follows.
+    Conversation history                              [not cached]
 """
 from __future__ import annotations
 
