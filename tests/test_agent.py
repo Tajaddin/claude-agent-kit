@@ -5,7 +5,7 @@ import threading
 import time
 
 from claude_agent_kit.agent import Agent, AgentConfig
-from claude_agent_kit.llm import MockClient
+from claude_agent_kit.llm import LLMResponse, MockClient
 from claude_agent_kit.memory import InMemoryStore, SqliteMemoryStore
 from claude_agent_kit.tools import (
     CalculatorTool,
@@ -207,3 +207,62 @@ class TestParallelToolCalls:
         assert [(b["tool_use_id"], b["content"]) for b in sent] == [("first", "slow"), ("second", "fast")]
         assert [r["tool_use_id"] for r in turn.tool_results] == ["first", "second"]
         assert tool_pairing_errors(agent.history) == []
+
+
+class _ScriptedLLM:
+    """Returns the given responses in order and snapshots every request."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    def respond(self, *, system, messages, tools=None, max_tokens=1024, temperature=0.0):
+        self.requests.append([dict(m) for m in messages])
+        return self.responses.pop(0)
+
+
+class TestMaxTokensStop:
+    def test_cut_off_tool_call_is_answered_not_run_and_the_turn_continues(self):
+        calls = []
+
+        class Record:
+            name = "record"
+            description = "records its input"
+            input_schema = {"type": "object", "properties": {}}
+
+            def execute(self, params):
+                calls.append(params)
+                return "recorded"
+
+        usage = {"input_tokens": 1, "output_tokens": 1}
+        llm = _ScriptedLLM(
+            [
+                LLMResponse(
+                    content=[
+                        {"type": "text", "text": "Let me record"},
+                        {"type": "tool_use", "id": "cut", "name": "record", "input": {"note": "hal"}},
+                    ],
+                    stop_reason="max_tokens",
+                    usage=usage,
+                ),
+                LLMResponse(content=[{"type": "text", "text": "final"}], stop_reason="end_turn", usage=usage),
+            ]
+        )
+        agent = Agent(llm, AgentConfig(system_blocks=["sys"], tools=[Record()]))
+        turn = agent.run_turn("note this")
+        assert calls == []
+        assert turn.assistant_text == "final"
+        assert turn.iterations == 2
+        assert turn.tool_results[0]["is_error"] is True
+        assert "max_tokens" in turn.tool_results[0]["content"]
+        assert tool_pairing_errors(llm.requests[1]) == []
+        assert tool_pairing_errors(agent.history) == []
+
+    def test_cut_off_text_reply_still_ends_the_turn(self):
+        usage = {"input_tokens": 1, "output_tokens": 1}
+        llm = _ScriptedLLM(
+            [LLMResponse(content=[{"type": "text", "text": "partial"}], stop_reason="max_tokens", usage=usage)]
+        )
+        turn = Agent(llm, AgentConfig(system_blocks=["sys"], tools=[CalculatorTool()])).run_turn("hi")
+        assert turn.assistant_text == "partial"
+        assert turn.iterations == 1

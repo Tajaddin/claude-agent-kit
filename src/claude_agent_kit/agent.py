@@ -16,7 +16,9 @@ The agent exposes two entry points:
 The loop is intentionally simple: read assistant content, run every
 tool_use block of that message concurrently, append the tool_result blocks
 (in tool_use order) back as a single user message, loop until
-stop_reason != "tool_use" or the budget runs out.
+stop_reason != "tool_use" or the budget runs out. A reply cut off by
+max_tokens in the middle of a tool call gets error tool_results instead of
+running the call, and the loop continues.
 """
 from __future__ import annotations
 
@@ -106,14 +108,21 @@ class Agent:
             self.cache_stats.record(response.usage)
             self.history.append({"role": "assistant", "content": response.content})
 
-            if response.stop_reason != "tool_use":
+            tool_uses = [
+                b for b in response.content if isinstance(b, dict) and b.get("type") == "tool_use"
+            ]
+            if response.stop_reason == "tool_use":
+                tool_results = self._run_tools(tool_uses)
+            elif response.stop_reason == "max_tokens" and tool_uses:
+                # The reply ran out of tokens inside a tool call, so its input
+                # may be incomplete. Do not run it, but answer it: the next
+                # request is rejected if a tool_use has no tool_result.
+                tool_results = [_cut_off(b) for b in tool_uses]
+            else:
                 turn.assistant_text = self._extract_text(response.content)
                 break
 
-            tool_results = self._run_tools(response.content)
-            turn.tool_calls.extend(
-                block for block in response.content if isinstance(block, dict) and block.get("type") == "tool_use"
-            )
+            turn.tool_calls.extend(tool_uses)
             turn.tool_results.extend(tr.as_block() for tr in tool_results)
             self.history.append(
                 {"role": "user", "content": [tr.as_block() for tr in tool_results]}
@@ -152,9 +161,8 @@ class Agent:
             self.history = new_history
         return did_compact
 
-    def _run_tools(self, content: list[dict[str, Any]]) -> list[ToolResult]:
-        uses = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
-        return dispatch_tools(self.config.tools, uses, timeout=self.config.tool_timeout_s)
+    def _run_tools(self, tool_uses: list[dict[str, Any]]) -> list[ToolResult]:
+        return dispatch_tools(self.config.tools, tool_uses, timeout=self.config.tool_timeout_s)
 
     @staticmethod
     def _extract_text(content: list[dict[str, Any]]) -> str:
@@ -163,3 +171,14 @@ class Agent:
             if isinstance(block, dict) and block.get("type") == "text":
                 parts.append(block.get("text", ""))
         return "".join(parts).strip()
+
+
+def _cut_off(tool_use: dict[str, Any]) -> ToolResult:
+    return ToolResult(
+        tool_use_id=tool_use.get("id", ""),
+        content=(
+            "Not run: the reply hit max_tokens before this tool call was complete. "
+            "Retry with a shorter call."
+        ),
+        is_error=True,
+    )
