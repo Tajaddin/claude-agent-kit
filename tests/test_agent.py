@@ -1,6 +1,7 @@
 """Agent loop tests with MockClient."""
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 
@@ -155,6 +156,30 @@ class TestToolExecution:
         turn = Agent(MockClient(script=script), config, memory=memory).run_turn("remember my city")
         assert turn.tool_results[0].get("is_error") is not True, turn.tool_results
         assert memory.recall("user.city") == "Tampa"
+
+    def test_parallel_tools_off_runs_tools_on_the_calling_thread(self):
+        # A default sqlite3 connection refuses use from any other thread.
+        conn = sqlite3.connect(":memory:")
+
+        class Query:
+            name = "query"
+            description = "runs SELECT 1"
+            input_schema = {"type": "object", "properties": {}}
+
+            def execute(self, params):
+                return str(conn.execute("SELECT 1").fetchone()[0])
+
+        script = [
+            ("go", [{"type": "tool_use", "id": "q1", "name": "query", "input": {}}]),
+            ("tool_result", [{"type": "text", "text": "done"}]),
+        ]
+        config = AgentConfig(
+            system_blocks=["sys"], tools=[Query()], parallel_tools=False, tool_timeout_s=None
+        )
+        turn = Agent(MockClient(script=script), config).run_turn("go")
+        conn.close()
+        assert turn.tool_results == [{"type": "tool_result", "tool_use_id": "q1", "content": "1"}]
+        assert turn.assistant_text == "done"
 
 
 class _BarrierTool:

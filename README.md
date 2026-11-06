@@ -5,7 +5,7 @@
 [![ci](https://github.com/Tajaddin/claude-agent-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/Tajaddin/claude-agent-kit/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
-[![Coverage](https://img.shields.io/badge/coverage-87%25-brightgreen)](#testing)
+[![Coverage](https://img.shields.io/badge/coverage-88%25-brightgreen)](#testing)
 
 ## Hero metrics
 
@@ -105,6 +105,12 @@ The agent sets these breakpoints:
 
 `cache.build_cached_system()` handles [1] + [3]. `cache.build_cached_tools()` handles [2]. The agent loop does not cache the conversation history, so each request pays full input price for it; the live benchmark above shows the effect. Anthropic's docs cache a multi-turn conversation by marking the last content block of the latest turn on every request.
 
+## Tool execution
+
+The tool calls of one response run concurrently, one thread each, in a copy of the caller's context, so context variables such as tracing spans carry over; results go back in call order. Each call gets `tool_timeout_s` (default 30 s) from the common start, and one still running then is answered with an `is_error` result. Python cannot stop a thread, so a timed-out call keeps running and keeps any lock it holds: a stuck `SqliteMemoryStore` call makes later memory calls time out too, and `close()` waits for it.
+
+Tools must therefore be thread-safe. For tools that are not (a default `sqlite3` connection, a client bound to one thread), set `AgentConfig(parallel_tools=False, tool_timeout_s=None)`: the calls then run one at a time on the calling thread. `parallel_tools=False` with a timeout runs them one at a time, each in a worker thread.
+
 ## Memory tool
 
 ```python
@@ -141,7 +147,7 @@ pip install -e ".[dev]"
 pytest --cov=claude_agent_kit
 ```
 
-83 tests, 87% coverage. Key tests:
+86 tests, 88% coverage. Key tests:
 
 - `test_cache.py::test_cost_summary_reflects_savings` — proves the cost math (>50% savings under production-shape input)
 - `test_agent.py::test_tool_use_loop` — proves the tool-call round trip handles `tool_use` -> `tool_result` -> final text correctly

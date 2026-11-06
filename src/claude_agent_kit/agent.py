@@ -14,7 +14,8 @@ The agent exposes two entry points:
   for a scripted list of user turns and returns per-turn stats.
 
 The loop is intentionally simple: read assistant content, run every
-tool_use block of that message concurrently, append the tool_result blocks
+tool_use block of that message concurrently (or one at a time, with
+parallel_tools=False), append the tool_result blocks
 (in tool_use order) back as a single user message, loop until
 stop_reason != "tool_use" or the budget runs out. A reply cut off by
 max_tokens in the middle of a tool call gets error tool_results instead of
@@ -52,6 +53,10 @@ class AgentConfig:
     # A tool call still running after this many seconds is answered with an
     # is_error tool_result. None waits forever.
     tool_timeout_s: float | None = 30.0
+    # Run the tool calls of one response concurrently, one thread each, so
+    # tools must be thread-safe. False runs them one at a time, and with
+    # tool_timeout_s=None on the calling thread.
+    parallel_tools: bool = True
 
 
 @dataclass
@@ -162,7 +167,12 @@ class Agent:
         return did_compact
 
     def _run_tools(self, tool_uses: list[dict[str, Any]]) -> list[ToolResult]:
-        return dispatch_tools(self.config.tools, tool_uses, timeout=self.config.tool_timeout_s)
+        return dispatch_tools(
+            self.config.tools,
+            tool_uses,
+            timeout=self.config.tool_timeout_s,
+            parallel=self.config.parallel_tools,
+        )
 
     @staticmethod
     def _extract_text(content: list[dict[str, Any]]) -> str:

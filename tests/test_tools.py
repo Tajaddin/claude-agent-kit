@@ -188,6 +188,39 @@ class TestDispatchTools:
             ("2", "right", False),
         ]
 
+    def test_sequential_calls_run_in_order_on_the_calling_thread(self):
+        seen = []
+
+        class Where:
+            description = "records where it ran"
+            input_schema = {"type": "object", "properties": {}}
+
+            def __init__(self, name):
+                self.name = name
+
+            def execute(self, params):
+                seen.append((self.name, threading.get_ident()))
+                return self.name
+
+        uses = [
+            {"type": "tool_use", "id": "1", "name": "a", "input": {}},
+            {"type": "tool_use", "id": "2", "name": "b", "input": {}},
+        ]
+        results = dispatch_tools([Where("a"), Where("b")], uses, parallel=False)
+        me = threading.get_ident()
+        assert seen == [("a", me), ("b", me)]
+        assert [(r.tool_use_id, r.content) for r in results] == [("1", "a"), ("2", "b")]
+
+    def test_sequential_calls_still_time_out(self):
+        uses = [
+            {"type": "tool_use", "id": "s", "name": "slow", "input": {}},
+            {"type": "tool_use", "id": "f", "name": "fast", "input": {}},
+        ]
+        tools = [_SleepTool("slow", 5.0), _SleepTool("fast", 0.0, reply="ok")]
+        results = dispatch_tools(tools, uses, timeout=0.3, parallel=False)
+        assert results[0].is_error is True and "timed out" in results[0].content
+        assert (results[1].content, results[1].is_error) == ("ok", False)
+
     def test_tools_see_the_callers_context_variables(self):
         span = contextvars.ContextVar("span", default="none")
 

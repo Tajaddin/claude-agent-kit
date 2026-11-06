@@ -69,6 +69,7 @@ def dispatch_tools(
     tool_uses: list[dict[str, Any]],
     *,
     timeout: float | None = None,
+    parallel: bool = True,
 ) -> list[ToolResult]:
     """Run every tool_use of one assistant message concurrently.
 
@@ -85,7 +86,13 @@ def dispatch_tools(
     The calls must not depend on each other: the model issued them in one
     message without seeing any result, so this is the parallel tool use the
     Messages API describes.
+
+    parallel=False runs the calls one after another instead, each with its
+    own timeout, and with no timeout on the calling thread: the way to use
+    tools that are not thread-safe.
     """
+    if not parallel:
+        return [dispatch_tool(tools, use, timeout=timeout) for use in tool_uses]
     slots: list[list[ToolResult]] = [[] for _ in tool_uses]
     workers = [
         threading.Thread(
