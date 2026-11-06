@@ -10,6 +10,7 @@ blocks back in the next user message.
 """
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from dataclasses import dataclass
@@ -71,13 +72,15 @@ def dispatch_tools(
 ) -> list[ToolResult]:
     """Run every tool_use of one assistant message concurrently.
 
-    Each call gets its own daemon thread; results come back in the order of
+    Each call gets its own daemon thread, started in a copy of the caller's
+    context (so context variables such as tracing spans carry over), and the
+    tools must be thread-safe. Results come back in the order of
     `tool_uses`, which is the order the API expects the tool_result blocks.
     With a timeout, every call has `timeout` seconds from the common start,
     and one still running then becomes an is_error result. Python cannot
-    stop a thread, so a timed-out call keeps running in the background;
-    tools that hold the GIL in one long C call (e.g. a huge integer power)
-    need their own limits.
+    stop a thread, so a timed-out call keeps running in the background,
+    holding any lock it took; tools that hold the GIL in one long C call
+    (e.g. a huge integer power) need their own limits.
 
     The calls must not depend on each other: the model issued them in one
     message without seeing any result, so this is the parallel tool use the
@@ -86,7 +89,9 @@ def dispatch_tools(
     slots: list[list[ToolResult]] = [[] for _ in tool_uses]
     workers = [
         threading.Thread(
-            target=lambda use=use, slot=slot: slot.append(_execute(tools, use)), daemon=True
+            target=contextvars.copy_context().run,
+            args=(_execute_into, slot, tools, use),
+            daemon=True,
         )
         for use, slot in zip(tool_uses, slots)
     ]
@@ -98,6 +103,10 @@ def dispatch_tools(
         worker.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
         results.append(slot[0] if slot else _unfinished(use, timeout))
     return results
+
+
+def _execute_into(slot: list[ToolResult], tools: list[Tool], tool_use: dict[str, Any]) -> None:
+    slot.append(_execute(tools, tool_use))
 
 
 def _unfinished(tool_use: dict[str, Any], timeout: float | None) -> ToolResult:

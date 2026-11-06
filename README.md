@@ -141,7 +141,7 @@ pip install -e ".[dev]"
 pytest --cov=claude_agent_kit
 ```
 
-82 tests, 87% coverage. Key tests:
+83 tests, 87% coverage. Key tests:
 
 - `test_cache.py::test_cost_summary_reflects_savings` — proves the cost math (>50% savings under production-shape input)
 - `test_agent.py::test_tool_use_loop` — proves the tool-call round trip handles `tool_use` -> `tool_result` -> final text correctly

@@ -1,6 +1,7 @@
 """Tool tests."""
 from __future__ import annotations
 
+import contextvars
 import subprocess
 import sys
 import threading
@@ -186,6 +187,25 @@ class TestDispatchTools:
             ("1", "left", False),
             ("2", "right", False),
         ]
+
+    def test_tools_see_the_callers_context_variables(self):
+        span = contextvars.ContextVar("span", default="none")
+
+        class ReadSpan:
+            name = "read_span"
+            description = "returns the current span"
+            input_schema = {"type": "object", "properties": {}}
+
+            def execute(self, params):
+                return span.get()
+
+        uses = [{"type": "tool_use", "id": str(i), "name": "read_span", "input": {}} for i in range(2)]
+        token = span.set("turn-7")
+        try:
+            results = dispatch_tools([ReadSpan()], uses)
+        finally:
+            span.reset(token)
+        assert [r.content for r in results] == ["turn-7", "turn-7"]
 
     def test_timeout_is_per_call_and_does_not_hold_back_fast_calls(self):
         uses = [
