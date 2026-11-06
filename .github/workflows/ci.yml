@@ -60,3 +60,5 @@ jobs:
           persist-credentials: false
       - run: docker build -t claude-agent-kit:ci .
       - run: docker run --rm --entrypoint python claude-agent-kit:ci -c "from claude_agent_kit import Agent; print('ok')"
+      - name: Mock benchmark as the image's non-root user, over a copied results file
+        run: docker run --rm --entrypoint python claude-agent-kit:ci -m benchmarks.cache_benchmark --mode mock --out benchmarks/results/cache_benchmark.json
