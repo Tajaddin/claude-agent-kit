@@ -51,6 +51,7 @@ class AnthropicClient:
         self,
         model: str = "claude-haiku-4-5-20251001",
         api_key: str | None = None,
+        timeout: float = 60.0,
     ):
         try:
             from anthropic import Anthropic
@@ -61,7 +62,8 @@ class AnthropicClient:
         key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not key:
             raise RuntimeError("ANTHROPIC_API_KEY not set. Use MockClient in tests.")
-        self._client = Anthropic(api_key=key)
+        # The SDK default is 10 minutes per request.
+        self._client = Anthropic(api_key=key, timeout=timeout)
         self.model = model
 
     def respond(

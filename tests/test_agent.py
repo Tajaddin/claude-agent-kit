@@ -266,3 +266,11 @@ class TestMaxTokensStop:
         turn = Agent(llm, AgentConfig(system_blocks=["sys"], tools=[CalculatorTool()])).run_turn("hi")
         assert turn.assistant_text == "partial"
         assert turn.iterations == 1
+
+
+class TestAnthropicClient:
+    def test_requests_have_an_explicit_timeout(self):
+        from claude_agent_kit.llm import AnthropicClient
+
+        assert AnthropicClient(api_key="sk-ant-test")._client.timeout == 60.0
+        assert AnthropicClient(api_key="sk-ant-test", timeout=5.0)._client.timeout == 5.0
