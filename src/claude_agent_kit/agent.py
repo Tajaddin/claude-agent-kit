@@ -13,9 +13,10 @@ The agent exposes two entry points:
 - run_conversation(turns): convenience for batch eval; iterates run_turn
   for a scripted list of user turns and returns per-turn stats.
 
-The loop is intentionally simple: read assistant content, dispatch every
-tool_use block, append tool_result blocks back as a single user message,
-loop until stop_reason != "tool_use" or the budget runs out.
+The loop is intentionally simple: read assistant content, run every
+tool_use block of that message concurrently, append the tool_result blocks
+(in tool_use order) back as a single user message, loop until
+stop_reason != "tool_use" or the budget runs out.
 """
 from __future__ import annotations
 
@@ -27,7 +28,12 @@ from claude_agent_kit.cache import CacheStats, build_cached_system, build_cached
 from claude_agent_kit.compaction import CompactionPolicy, compact_history
 from claude_agent_kit.llm import LLMClient
 from claude_agent_kit.memory import InMemoryStore, MemoryStore
-from claude_agent_kit.tools.base import Tool, dispatch_tool, tools_as_anthropic_schemas
+from claude_agent_kit.tools.base import (
+    Tool,
+    ToolResult,
+    dispatch_tools,
+    tools_as_anthropic_schemas,
+)
 
 
 @dataclass
@@ -146,14 +152,9 @@ class Agent:
             self.history = new_history
         return did_compact
 
-    def _run_tools(self, content: list[dict[str, Any]]) -> list[Any]:
-        results = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                results.append(
-                    dispatch_tool(self.config.tools, block, timeout=self.config.tool_timeout_s)
-                )
-        return results
+    def _run_tools(self, content: list[dict[str, Any]]) -> list[ToolResult]:
+        uses = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
+        return dispatch_tools(self.config.tools, uses, timeout=self.config.tool_timeout_s)
 
     @staticmethod
     def _extract_text(content: list[dict[str, Any]]) -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -14,7 +15,7 @@ from claude_agent_kit.tools import (
     MemorySaveTool,
     MockSearchTool,
 )
-from claude_agent_kit.tools.base import dispatch_tool
+from claude_agent_kit.tools.base import dispatch_tool, dispatch_tools
 
 
 class TestCalculator:
@@ -159,3 +160,40 @@ class TestDispatchTimeout:
         block = {"type": "tool_use", "id": "f", "name": "fast", "input": {}}
         result = dispatch_tool([_SleepTool("fast", 0.0, reply="ok")], block, timeout=5.0)
         assert (result.content, result.is_error) == ("ok", False)
+
+
+class TestDispatchTools:
+    def test_runs_calls_concurrently_and_keeps_their_order(self):
+        barrier = threading.Barrier(2)
+
+        class Meet:
+            description = "waits for the other call"
+            input_schema = {"type": "object", "properties": {}}
+
+            def __init__(self, name):
+                self.name = name
+
+            def execute(self, params):
+                barrier.wait(timeout=3)
+                return self.name
+
+        uses = [
+            {"type": "tool_use", "id": "1", "name": "left", "input": {}},
+            {"type": "tool_use", "id": "2", "name": "right", "input": {}},
+        ]
+        results = dispatch_tools([Meet("left"), Meet("right")], uses)
+        assert [(r.tool_use_id, r.content, r.is_error) for r in results] == [
+            ("1", "left", False),
+            ("2", "right", False),
+        ]
+
+    def test_timeout_is_per_call_and_does_not_hold_back_fast_calls(self):
+        uses = [
+            {"type": "tool_use", "id": "s", "name": "slow", "input": {}},
+            {"type": "tool_use", "id": "f", "name": "fast", "input": {}},
+        ]
+        start = time.perf_counter()
+        results = dispatch_tools([_SleepTool("slow", 5.0), _SleepTool("fast", 0.0, reply="ok")], uses, timeout=0.3)
+        assert time.perf_counter() - start < 2.0
+        assert results[0].is_error is True and "timed out" in results[0].content
+        assert (results[1].content, results[1].is_error) == ("ok", False)

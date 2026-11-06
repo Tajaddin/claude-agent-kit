@@ -1,6 +1,7 @@
 """Agent loop tests with MockClient."""
 from __future__ import annotations
 
+import threading
 import time
 
 from claude_agent_kit.agent import Agent, AgentConfig
@@ -12,6 +13,7 @@ from claude_agent_kit.tools import (
     MemorySaveTool,
     MockSearchTool,
 )
+from tests.helpers import tool_pairing_errors
 
 
 def _basic_agent(script=None, default_text="ok"):
@@ -153,3 +155,55 @@ class TestToolExecution:
         turn = Agent(MockClient(script=script), config, memory=memory).run_turn("remember my city")
         assert turn.tool_results[0].get("is_error") is not True, turn.tool_results
         assert memory.recall("user.city") == "Tampa"
+
+
+class _BarrierTool:
+    """Returns only if `parties` calls are inside execute() at the same time."""
+
+    description = "waits for its siblings"
+    input_schema = {"type": "object", "properties": {}}
+
+    def __init__(self, name: str, barrier: threading.Barrier):
+        self.name = name
+        self.barrier = barrier
+
+    def execute(self, params):
+        self.barrier.wait(timeout=3)
+        return f"{self.name} ran alongside the others"
+
+
+class TestParallelToolCalls:
+    def test_tool_calls_in_one_response_run_concurrently(self):
+        barrier = threading.Barrier(3)
+        tools = [_BarrierTool(n, barrier) for n in ("a", "b", "c")]
+        uses = [{"type": "tool_use", "id": f"id_{n}", "name": n, "input": {}} for n in ("a", "b", "c")]
+        script = [("go", uses), ("tool_result", [{"type": "text", "text": "all done"}])]
+        agent = Agent(MockClient(script=script), AgentConfig(system_blocks=["sys"], tools=tools))
+        turn = agent.run_turn("go")
+        assert [r.get("is_error", False) for r in turn.tool_results] == [False, False, False], turn.tool_results
+        assert turn.assistant_text == "all done"
+
+    def test_results_keep_the_order_of_the_tool_calls(self):
+        class Sleepy:
+            description = "sleeps"
+            input_schema = {"type": "object", "properties": {}}
+
+            def __init__(self, name, seconds):
+                self.name, self.seconds = name, seconds
+
+            def execute(self, params):
+                time.sleep(self.seconds)
+                return self.name
+
+        tools = [Sleepy("slow", 0.3), Sleepy("fast", 0.0)]
+        uses = [
+            {"type": "tool_use", "id": "first", "name": "slow", "input": {}},
+            {"type": "tool_use", "id": "second", "name": "fast", "input": {}},
+        ]
+        script = [("go", uses), ("tool_result", [{"type": "text", "text": "ok"}])]
+        agent = Agent(MockClient(script=script), AgentConfig(system_blocks=["sys"], tools=tools))
+        turn = agent.run_turn("go")
+        sent = agent.history[2]["content"]
+        assert [(b["tool_use_id"], b["content"]) for b in sent] == [("first", "slow"), ("second", "fast")]
+        assert [r["tool_use_id"] for r in turn.tool_results] == ["first", "second"]
+        assert tool_pairing_errors(agent.history) == []

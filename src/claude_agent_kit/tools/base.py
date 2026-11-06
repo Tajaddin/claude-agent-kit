@@ -4,12 +4,14 @@ Every tool exposes the same shape:
 - name + description + input_schema (the Anthropic Messages API tool def)
 - execute(input_dict) -> ToolResult
 
-The agent loop reads tool_use blocks from the model, calls dispatch_tool,
-then sends tool_result blocks back in the next user message.
+The agent loop reads tool_use blocks from the model, runs them with
+dispatch_tools (concurrently, results in order), then sends tool_result
+blocks back in the next user message.
 """
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -54,26 +56,54 @@ def dispatch_tool(
     tool_use is a tool_use block from the Anthropic API:
       {"type": "tool_use", "id": "toolu_...", "name": "...", "input": {...}}
 
-    With a timeout the tool runs in a daemon thread, and a call still running
-    after `timeout` seconds becomes an is_error result. Python cannot stop a
-    thread, so the call keeps running in the background; tools that hold the
-    GIL in one long C call (e.g. a huge integer power) need their own limits.
+    With a timeout the tool runs in a worker thread; see dispatch_tools.
     """
     if timeout is None:
         return _execute(tools, tool_use)
-    done: list[ToolResult] = []
-    worker = threading.Thread(target=lambda: done.append(_execute(tools, tool_use)), daemon=True)
-    worker.start()
-    worker.join(timeout)
-    return done[0] if done else _timed_out(tool_use, timeout)
+    return dispatch_tools(tools, [tool_use], timeout=timeout)[0]
 
 
-def _timed_out(tool_use: dict[str, Any], timeout: float) -> ToolResult:
-    return ToolResult(
-        tool_use_id=tool_use.get("id", ""),
-        content=f"Tool {tool_use.get('name', '')} timed out after {timeout:g}s",
-        is_error=True,
-    )
+def dispatch_tools(
+    tools: list[Tool],
+    tool_uses: list[dict[str, Any]],
+    *,
+    timeout: float | None = None,
+) -> list[ToolResult]:
+    """Run every tool_use of one assistant message concurrently.
+
+    Each call gets its own daemon thread; results come back in the order of
+    `tool_uses`, which is the order the API expects the tool_result blocks.
+    With a timeout, every call has `timeout` seconds from the common start,
+    and one still running then becomes an is_error result. Python cannot
+    stop a thread, so a timed-out call keeps running in the background;
+    tools that hold the GIL in one long C call (e.g. a huge integer power)
+    need their own limits.
+
+    The calls must not depend on each other: the model issued them in one
+    message without seeing any result, so this is the parallel tool use the
+    Messages API describes.
+    """
+    slots: list[list[ToolResult]] = [[] for _ in tool_uses]
+    workers = [
+        threading.Thread(
+            target=lambda use=use, slot=slot: slot.append(_execute(tools, use)), daemon=True
+        )
+        for use, slot in zip(tool_uses, slots)
+    ]
+    for worker in workers:
+        worker.start()
+    deadline = None if timeout is None else time.monotonic() + timeout
+    results: list[ToolResult] = []
+    for use, worker, slot in zip(tool_uses, workers, slots):
+        worker.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
+        results.append(slot[0] if slot else _unfinished(use, timeout))
+    return results
+
+
+def _unfinished(tool_use: dict[str, Any], timeout: float | None) -> ToolResult:
+    name = tool_use.get("name", "")
+    why = f"timed out after {timeout:g}s" if timeout is not None else "did not return a result"
+    return ToolResult(tool_use_id=tool_use.get("id", ""), content=f"Tool {name} {why}", is_error=True)
 
 
 def _execute(tools: list[Tool], tool_use: dict[str, Any]) -> ToolResult:
