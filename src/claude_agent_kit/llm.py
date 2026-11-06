@@ -119,7 +119,11 @@ class MockClient:
     - The first time we see (system, tools) fingerprint X, the response
       reports cache_creation_input_tokens on the cacheable prefix.
     - Subsequent calls with the same fingerprint report
-      cache_read_input_tokens instead. This mirrors Anthropic's API.
+      cache_read_input_tokens instead, as the API does for a cached prefix.
+    - With caching on, only the newest message is billed as fresh input, as
+      if the earlier conversation were cached. The agent does not request
+      that (it marks only the system blocks and tools), so the mock's
+      savings are higher than a live run's; it is a simulation.
 
     The response content is taken from `script` which maps a substring of
     the latest user message to a list of content blocks (the assistant's
@@ -199,10 +203,10 @@ class MockClient:
             chosen_content = [{"type": "text", "text": self.default_text}]
 
         # When caching is enabled (any cache_control entries on system/tools),
-        # only the most recent message counts as fresh input. Everything older
-        # is either part of the cached prefix or would itself be marked cached
-        # in a production setup. When caching is disabled, every message counts
-        # as fresh input on every call.
+        # only the most recent message counts as fresh input, as if the history
+        # were cached too. The agent does not cache the history, so a live run
+        # bills it as fresh input on every request. When caching is disabled,
+        # every message counts as fresh input on every call.
         caching_enabled = self._has_cache_control(system) or self._has_cache_control(tools)
         if caching_enabled:
             fresh_msgs = 1
