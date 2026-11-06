@@ -5,16 +5,15 @@ definitions + a few-shot example block stay constant across turns, so they
 should hit the cache from turn 2 onward.
 
 Two modes:
-- live: hits real Anthropic API. Needs ANTHROPIC_API_KEY. Costs ~$0.03 in
-  Haiku 4.5 tokens.
+- live: hits real Anthropic API. Needs ANTHROPIC_API_KEY. The committed
+  run (results/cache_benchmark.json) cost about $0.15 for both passes at
+  Haiku 4.5 list prices.
 - mock: uses MockClient, which simulates cache accounting from a
   fingerprint of the system blocks and tools and bills only the newest
   message as fresh input (as if the history were cached, which the agent
   does not request). Free, deterministic; a simulation, not a measurement.
 
-Hero number: input-token cost reduction with caching vs without. Theoretical
-maximum on a 10-turn conversation with a ~200-token prefix is ~85% savings
-(turn 1 pays full prefix as cache_creation; turns 2-10 pay ~10% per read).
+Hero number: input-token cost reduction with caching vs without.
 
 Usage:
     python -m benchmarks.cache_benchmark --mode mock
