@@ -104,9 +104,10 @@ class SqliteMemoryStore:
     def list_keys(self, prefix: str = "") -> list[str]:
         with self._lock:
             if prefix:
+                # Not LIKE: it treats _ and % as wildcards and ignores ASCII case.
                 rows = self._conn.execute(
-                    "SELECT key FROM memory WHERE key LIKE ? ORDER BY key",
-                    (f"{prefix}%",),
+                    "SELECT key FROM memory WHERE substr(key, 1, ?) = ? ORDER BY key",
+                    (len(prefix), prefix),
                 ).fetchall()
             else:
                 rows = self._conn.execute("SELECT key FROM memory ORDER BY key").fetchall()

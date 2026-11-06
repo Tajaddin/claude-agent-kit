@@ -1,6 +1,8 @@
 """Memory store tests."""
 from __future__ import annotations
 
+import pytest
+
 from claude_agent_kit.memory import InMemoryStore, SqliteMemoryStore
 
 
@@ -57,3 +59,23 @@ class TestSqliteMemoryStore:
         assert s.recall("k") == "v2"
         assert s.list_keys() == ["k"]
         s.close()
+
+
+class TestPrefixSearchParity:
+    @pytest.mark.parametrize("store", [InMemoryStore, SqliteMemoryStore])
+    @pytest.mark.parametrize(
+        ("prefix", "expected"),
+        [
+            ("user_", ["user_a.x"]),
+            ("user.", ["user.b"]),
+            ("User", ["User.z"]),
+            ("50%", ["50%.off"]),
+            ("a\\", ["a\\b"]),
+            ("", ["50%.off", "User.z", "a\\b", "user.b", "userXa.y", "user_a.x"]),
+        ],
+    )
+    def test_prefix_is_literal_and_case_sensitive(self, store, prefix, expected):
+        s = store()
+        for key in ("user_a.x", "userXa.y", "User.z", "user.b", "50%.off", "a\\b"):
+            s.save(key, "v")
+        assert s.list_keys(prefix) == expected
