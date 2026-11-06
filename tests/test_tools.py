@@ -1,6 +1,11 @@
 """Tool tests."""
 from __future__ import annotations
 
+import subprocess
+import sys
+
+import pytest
+
 from claude_agent_kit.memory import InMemoryStore
 from claude_agent_kit.tools import (
     CalculatorTool,
@@ -32,6 +37,31 @@ class TestCalculator:
         # imports/identifiers are unsupported
         out = CalculatorTool().execute({"expression": "__import__('os')"})
         assert out.startswith("error:")
+
+
+class TestCalculatorLimits:
+    @pytest.mark.parametrize("expression", ["9**9**9", "2**10**10", "(10**5000)**(10**5000)"])
+    def test_huge_powers_are_refused_quickly(self, expression):
+        # In a subprocess so an unbounded computation fails the test instead
+        # of hanging the suite (big-int pow holds the GIL).
+        code = (
+            "from claude_agent_kit.tools.calculator import CalculatorTool;"
+            f"print(CalculatorTool().execute({{'expression': {expression!r}}}))"
+        )
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=20)
+        assert out.stdout.startswith("error: "), out.stdout + out.stderr
+
+    def test_large_but_bounded_results_still_work(self):
+        assert CalculatorTool().execute({"expression": "2**100"}) == str(2**100)
+        assert CalculatorTool().execute({"expression": "2**-2"}) == "0.25"
+
+    def test_result_size_cap_applies_to_every_operator(self):
+        out = CalculatorTool().execute({"expression": "2**9000 * 2**9000"})
+        assert out.startswith("error: result too large")
+
+    @pytest.mark.parametrize("expression", ["10.0**400", "1e308 * 10", "1e308 * 10 - 1e308 * 10"])
+    def test_float_overflow_is_an_error_not_an_exception(self, expression):
+        assert CalculatorTool().execute({"expression": expression}).startswith("error: ")
 
 
 class TestMockSearch:
