@@ -313,9 +313,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--out",
         type=Path,
-        default=RESULTS_DIR / "cache_benchmark.json",
+        default=None,
+        help="default: results/cache_benchmark.json for live, results/cache_benchmark-mock.json for mock",
     )
     args = parser.parse_args(argv)
+    if args.out is None:
+        # cache_benchmark.json is the committed live record; a mock run must not replace it.
+        name = "cache_benchmark.json" if args.mode == "live" else "cache_benchmark-mock.json"
+        args.out = RESULTS_DIR / name
 
     turns = USER_TURNS[: max(1, min(args.turns, len(USER_TURNS)))]
 

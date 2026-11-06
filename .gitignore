@@ -23,6 +23,7 @@ htmlcov/
 *.swp
 
 benchmarks/results/*.tmp.json
+benchmarks/results/cache_benchmark-mock.json
 
 .DS_Store
 Thumbs.db

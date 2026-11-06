@@ -11,7 +11,7 @@
 
 Two modes of one benchmark:
 - `python -m benchmarks.cache_benchmark --mode live --turns 10` (needs ANTHROPIC_API_KEY; the committed run took 22 s with caching and 86 s without, about $0.15 for both passes at list prices)
-- `python -m benchmarks.cache_benchmark --mode mock` (no API key, 3 s locally; a simulation, see below)
+- `python -m benchmarks.cache_benchmark --mode mock` (no API key, 3 s locally; a simulation, see below; writes `benchmarks/results/cache_benchmark-mock.json`, not committed)
 
 | Source | Cacheable prefix size | Cache hit rate | Input-token cost reduction |
 |---|---:|---:|---:|
@@ -137,7 +137,7 @@ pip install -e ".[dev]"
 pytest --cov=claude_agent_kit
 ```
 
-86 tests, 88% coverage. Key tests:
+87 tests, 88% coverage. Key tests:
 
 - `test_cache.py::test_cost_summary_reflects_savings` — proves the cost math (>50% savings under production-shape input)
 - `test_agent.py::test_tool_use_loop` — proves the tool-call round trip handles `tool_use` -> `tool_result` -> final text correctly
@@ -176,7 +176,7 @@ src/claude_agent_kit/
 benchmarks/
   cache_benchmark.py    # 10-turn run, cache on vs off
   results/
-    cache_benchmark.json
+    cache_benchmark.json  # the live run's record
 ```
 
 ## License
