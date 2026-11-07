@@ -1,15 +1,20 @@
 """Agent loop tests with MockClient."""
 from __future__ import annotations
 
+import sqlite3
+import threading
+import time
+
 from claude_agent_kit.agent import Agent, AgentConfig
-from claude_agent_kit.llm import MockClient
-from claude_agent_kit.memory import InMemoryStore
+from claude_agent_kit.llm import LLMResponse, MockClient
+from claude_agent_kit.memory import InMemoryStore, SqliteMemoryStore
 from claude_agent_kit.tools import (
     CalculatorTool,
     MemoryRecallTool,
     MemorySaveTool,
     MockSearchTool,
 )
+from tests.helpers import tool_pairing_errors
 
 
 def _basic_agent(script=None, default_text="ok"):
@@ -115,3 +120,182 @@ class TestAgentCompaction:
         assert agent.config.compaction_policy.max_history_chars == 50
         # History should be trimmed (latest 2 user/assistant pairs plus tool results).
         assert len(agent.history) <= 6
+
+
+class TestToolExecution:
+    def test_slow_tool_times_out_and_the_turn_continues(self):
+        class Slow:
+            name = "slow"
+            description = "sleeps"
+            input_schema = {"type": "object", "properties": {}}
+
+            def execute(self, params):
+                time.sleep(5)
+                return "late"
+
+        script = [
+            ("go", [{"type": "tool_use", "id": "s1", "name": "slow", "input": {}}]),
+            ("tool_result", [{"type": "text", "text": "gave up"}]),
+        ]
+        config = AgentConfig(system_blocks=["sys"], tools=[Slow()], tool_timeout_s=0.2)
+        agent = Agent(MockClient(script=script), config)
+        start = time.perf_counter()
+        turn = agent.run_turn("go")
+        assert time.perf_counter() - start < 2.0
+        assert turn.assistant_text == "gave up"
+        assert turn.tool_results[0]["is_error"] is True
+        assert "timed out" in turn.tool_results[0]["content"]
+
+    def test_sqlite_memory_tools_work_when_tools_run_off_the_caller_thread(self, tmp_path):
+        memory = SqliteMemoryStore(tmp_path / "agent.db")
+        script = [
+            ("remember", [{"type": "tool_use", "id": "m1", "name": "memory_save", "input": {"key": "user.city", "value": "Tampa"}}]),
+            ("tool_result", [{"type": "text", "text": "saved"}]),
+        ]
+        config = AgentConfig(system_blocks=["sys"], tools=[MemorySaveTool(store=memory)])
+        turn = Agent(MockClient(script=script), config, memory=memory).run_turn("remember my city")
+        assert turn.tool_results[0].get("is_error") is not True, turn.tool_results
+        assert memory.recall("user.city") == "Tampa"
+
+    def test_parallel_tools_off_runs_tools_on_the_calling_thread(self):
+        # A default sqlite3 connection refuses use from any other thread.
+        conn = sqlite3.connect(":memory:")
+
+        class Query:
+            name = "query"
+            description = "runs SELECT 1"
+            input_schema = {"type": "object", "properties": {}}
+
+            def execute(self, params):
+                return str(conn.execute("SELECT 1").fetchone()[0])
+
+        script = [
+            ("go", [{"type": "tool_use", "id": "q1", "name": "query", "input": {}}]),
+            ("tool_result", [{"type": "text", "text": "done"}]),
+        ]
+        config = AgentConfig(
+            system_blocks=["sys"], tools=[Query()], parallel_tools=False, tool_timeout_s=None
+        )
+        turn = Agent(MockClient(script=script), config).run_turn("go")
+        conn.close()
+        assert turn.tool_results == [{"type": "tool_result", "tool_use_id": "q1", "content": "1"}]
+        assert turn.assistant_text == "done"
+
+
+class _BarrierTool:
+    """Returns only if `parties` calls are inside execute() at the same time."""
+
+    description = "waits for its siblings"
+    input_schema = {"type": "object", "properties": {}}
+
+    def __init__(self, name: str, barrier: threading.Barrier):
+        self.name = name
+        self.barrier = barrier
+
+    def execute(self, params):
+        self.barrier.wait(timeout=3)
+        return f"{self.name} ran alongside the others"
+
+
+class TestParallelToolCalls:
+    def test_tool_calls_in_one_response_run_concurrently(self):
+        barrier = threading.Barrier(3)
+        tools = [_BarrierTool(n, barrier) for n in ("a", "b", "c")]
+        uses = [{"type": "tool_use", "id": f"id_{n}", "name": n, "input": {}} for n in ("a", "b", "c")]
+        script = [("go", uses), ("tool_result", [{"type": "text", "text": "all done"}])]
+        agent = Agent(MockClient(script=script), AgentConfig(system_blocks=["sys"], tools=tools))
+        turn = agent.run_turn("go")
+        assert [r.get("is_error", False) for r in turn.tool_results] == [False, False, False], turn.tool_results
+        assert turn.assistant_text == "all done"
+
+    def test_results_keep_the_order_of_the_tool_calls(self):
+        class Sleepy:
+            description = "sleeps"
+            input_schema = {"type": "object", "properties": {}}
+
+            def __init__(self, name, seconds):
+                self.name, self.seconds = name, seconds
+
+            def execute(self, params):
+                time.sleep(self.seconds)
+                return self.name
+
+        tools = [Sleepy("slow", 0.3), Sleepy("fast", 0.0)]
+        uses = [
+            {"type": "tool_use", "id": "first", "name": "slow", "input": {}},
+            {"type": "tool_use", "id": "second", "name": "fast", "input": {}},
+        ]
+        script = [("go", uses), ("tool_result", [{"type": "text", "text": "ok"}])]
+        agent = Agent(MockClient(script=script), AgentConfig(system_blocks=["sys"], tools=tools))
+        turn = agent.run_turn("go")
+        sent = agent.history[2]["content"]
+        assert [(b["tool_use_id"], b["content"]) for b in sent] == [("first", "slow"), ("second", "fast")]
+        assert [r["tool_use_id"] for r in turn.tool_results] == ["first", "second"]
+        assert tool_pairing_errors(agent.history) == []
+
+
+class _ScriptedLLM:
+    """Returns the given responses in order and snapshots every request."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    def respond(self, *, system, messages, tools=None, max_tokens=1024, temperature=0.0):
+        self.requests.append([dict(m) for m in messages])
+        return self.responses.pop(0)
+
+
+class TestMaxTokensStop:
+    def test_cut_off_tool_call_is_answered_not_run_and_the_turn_continues(self):
+        calls = []
+
+        class Record:
+            name = "record"
+            description = "records its input"
+            input_schema = {"type": "object", "properties": {}}
+
+            def execute(self, params):
+                calls.append(params)
+                return "recorded"
+
+        usage = {"input_tokens": 1, "output_tokens": 1}
+        llm = _ScriptedLLM(
+            [
+                LLMResponse(
+                    content=[
+                        {"type": "text", "text": "Let me record"},
+                        {"type": "tool_use", "id": "cut", "name": "record", "input": {"note": "hal"}},
+                    ],
+                    stop_reason="max_tokens",
+                    usage=usage,
+                ),
+                LLMResponse(content=[{"type": "text", "text": "final"}], stop_reason="end_turn", usage=usage),
+            ]
+        )
+        agent = Agent(llm, AgentConfig(system_blocks=["sys"], tools=[Record()]))
+        turn = agent.run_turn("note this")
+        assert calls == []
+        assert turn.assistant_text == "final"
+        assert turn.iterations == 2
+        assert turn.tool_results[0]["is_error"] is True
+        assert "max_tokens" in turn.tool_results[0]["content"]
+        assert tool_pairing_errors(llm.requests[1]) == []
+        assert tool_pairing_errors(agent.history) == []
+
+    def test_cut_off_text_reply_still_ends_the_turn(self):
+        usage = {"input_tokens": 1, "output_tokens": 1}
+        llm = _ScriptedLLM(
+            [LLMResponse(content=[{"type": "text", "text": "partial"}], stop_reason="max_tokens", usage=usage)]
+        )
+        turn = Agent(llm, AgentConfig(system_blocks=["sys"], tools=[CalculatorTool()])).run_turn("hi")
+        assert turn.assistant_text == "partial"
+        assert turn.iterations == 1
+
+
+class TestAnthropicClient:
+    def test_requests_have_an_explicit_timeout(self):
+        from claude_agent_kit.llm import AnthropicClient
+
+        assert AnthropicClient(api_key="sk-ant-test")._client.timeout == 60.0
+        assert AnthropicClient(api_key="sk-ant-test", timeout=5.0)._client.timeout == 5.0

@@ -1,28 +1,28 @@
 # claude-agent-kit
 
-> Production patterns for agents on the Anthropic API. **Live Haiku 4.5: 60% cache hit rate, 12% cost reduction on a 10-turn conversation with a 2300-token prefix.** Mock projection at production prefix size (2500 tokens): 90% hit / 66.75% reduction. Prompt caching, memory tool, parallel tool execution, conversation compaction in one minimal package.
+> Production patterns for agents on the Anthropic API. **Live Haiku 4.5: 60% cache hit rate on the cached prefix, 12% cost reduction on a 10-turn conversation with a 2300-token prefix.** Prompt caching, memory tool, parallel tool execution, conversation compaction in one minimal package.
 
 [![ci](https://github.com/Tajaddin/claude-agent-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/Tajaddin/claude-agent-kit/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
-[![Coverage](https://img.shields.io/badge/coverage-85%25-brightgreen)](#testing)
+[![Coverage](https://img.shields.io/badge/coverage-88%25-brightgreen)](#testing)
 
 ## Hero metrics
 
-Two benchmarks, both reproducible:
-- `python -m benchmarks.cache_benchmark --mode mock` (2 seconds, no API key)
-- `python -m benchmarks.cache_benchmark --mode live --turns 10` (40-60 seconds, needs ANTHROPIC_API_KEY, ~$0.05)
+Two modes of one benchmark:
+- `python -m benchmarks.cache_benchmark --mode live --turns 10` (needs ANTHROPIC_API_KEY; the committed run took 22 s with caching and 86 s without, about $0.15 for both passes at list prices)
+- `python -m benchmarks.cache_benchmark --mode mock` (no API key, 3 s locally; a simulation, see below; writes `benchmarks/results/cache_benchmark-mock.json`, not committed)
 
 | Source | Cacheable prefix size | Cache hit rate | Input-token cost reduction |
 |---|---:|---:|---:|
 | **Live on Haiku 4.5** (2026-05-20) | ~2334 tokens | **60.26%** | **11.86%** |
-| Mock projection (production-shape) | 2500 tokens | 90.0% | 66.75% |
+| Mock simulation (not a measurement) | 2500 tokens | 90.0% | 66.75% |
 
-Both numbers are real measurements; they differ because:
-1. The mock counts only the most-recent user message as fresh input. The live API also adds assistant + tool-result blocks between turns to the fresh-input column. Each tool round trip adds ~50-300 tokens of fresh input the cache cannot serve.
-2. With a longer system prompt (e.g. 9000 tokens), the live hit rate climbs to ~100% on every turn after the first (verified by the diagnostic in `benchmarks/results/cache_benchmark.json`).
+Only the live row is a measurement; its raw usage is in `benchmarks/results/cache_benchmark.json`. Cache hit rate here is cache reads divided by cache reads plus cache writes, so it covers only the cached prefix: of all input tokens in the live run, cache reads were 17% (13,182 of 76,928), and 72% (55,051) were uncached.
 
-Anthropic's prompt-cache floor for Claude Haiku 4.5 is **2048 input tokens** in the cached prefix. Below that, `cache_control` is silently ignored. The padded `FEW_SHOT` in `benchmarks/cache_benchmark.py` crosses that floor by design; if your production agent's system prompt is shorter, expand it (with rules, examples, or a few-shot block) before enabling caching.
+The mock row is a simulation. `MockClient` bills only the newest message as fresh input, which assumes the earlier conversation is served from cache. The agent loop does not request that: it sets `cache_control` on the system blocks and tools only, so every request re-sends the history, assistant replies and tool results as uncached input. That is why the live numbers are lower.
+
+Each model has a minimum cacheable prefix length (see Anthropic's prompt-caching docs); below it, `cache_control` is silently ignored. The padded `FEW_SHOT` in `benchmarks/cache_benchmark.py` is there to reach it; if your production agent's system prompt is shorter, expand it (with rules, examples, or a few-shot block) before enabling caching.
 
 The cost number is what your finance team sees on the invoice.
 
@@ -32,21 +32,11 @@ Five small modules. Each one solves a problem the Anthropic Python SDK leaves to
 
 | Module | Problem solved |
 |---|---|
-| `cache.py` | Where to place `cache_control` breakpoints (system, tools, history) and how to read back `cache_creation` / `cache_read` usage from the API response. |
+| `cache.py` | `cache_control` breakpoints for the system blocks and tools, and how to read back `cache_creation` / `cache_read` usage from the API response. |
 | `memory.py` | In-memory and SQLite backends for the agent's `memory_save` / `memory_recall` tools. Persistent across sessions. |
-| `compaction.py` | When the message history exceeds a char budget, summarize older turns and keep the recent ones. Pluggable summarizer. |
-| `agent.py` | The tool-use loop. Reads `tool_use` blocks, dispatches them, sends `tool_result` blocks back. Stops on `end_turn` or a hard iteration cap. |
-| `llm.py` | `AnthropicClient` and a `MockClient` that simulates cache accounting with the same prefix-fingerprint logic the API uses. |
-
-## Why this matters for production
-
-Recruiter signal this maps to:
-- **Anthropic SDK production usage** (Caylent, M3 USA, ERP Suites, Pair Team, forgd.ai)
-- **Prompt caching** (mentioned in 6+ Senior AI Engineer JDs in 2026 for cost-sensitive workloads)
-- **Memory + tool use** (Sekai, Mango Languages, Cohere Agent Infrastructure)
-- **Conversation compaction** (every long-context agent JD eventually)
-
-The Anthropic SDK gives you a Messages API. This kit shows you what to put *into* that API.
+| `compaction.py` | When the message history (tool results included) exceeds a char budget, summarize older turns and keep the recent ones, never separating a `tool_result` from its `tool_use`. Pluggable summarizer. |
+| `agent.py` | The tool-use loop. Runs the `tool_use` blocks of one response concurrently (one thread each, per-tool timeout, results in call order) and sends the `tool_result` blocks back. Stops on `end_turn` or a hard iteration cap. |
+| `llm.py` | `AnthropicClient` and a `MockClient` that simulates cache accounting from a fingerprint of the system blocks and tools. |
 
 ## Quick start
 
@@ -94,19 +84,22 @@ print(agent.cache_stats.cost_summary())
 
 ## Prompt-caching breakpoint strategy
 
-This kit enforces a 4-breakpoint pattern that survives both single-turn and multi-turn workloads:
+The agent sets these breakpoints:
 
 ```
 [1] System block: persona, rules, output format            [cache_control]
 [2] Tool definitions: schemas, descriptions                [cache_control on last tool]
 [3] Few-shot examples: canonical demos                      [cache_control, optional]
-[4] Conversation history up to the last user turn          [cache_control on last assistant turn]
-    Current user turn                                       (no cache_control, always fresh)
+    Conversation history                                    (not cached)
 ```
 
-The last user turn must never be cached. Anthropic treats a cache_control mark on a non-final message as "everything up to and including this is cacheable". If you mark the current user turn, the model has nothing fresh to read.
+`cache.build_cached_system()` handles [1] + [3]. `cache.build_cached_tools()` handles [2]. The agent loop does not cache the conversation history, so each request pays full input price for it; the live benchmark above shows the effect. Anthropic's docs cache a multi-turn conversation by marking the last content block of the latest turn on every request.
 
-`cache.build_cached_system()` handles [1] + [3]. `cache.build_cached_tools()` handles [2]. The agent loop handles the history side automatically.
+## Tool execution
+
+The tool calls of one response run concurrently, one thread each, in a copy of the caller's context, so context variables such as tracing spans carry over; results go back in call order. Each call gets `tool_timeout_s` (default 30 s) from the common start, and one still running then is answered with an `is_error` result. Python cannot stop a thread, so a timed-out call keeps running and keeps any lock it holds: a stuck `SqliteMemoryStore` call makes later memory calls time out too, and `close()` waits for it.
+
+Tools must therefore be thread-safe. For tools that are not (a default `sqlite3` connection, a client bound to one thread), set `AgentConfig(parallel_tools=False, tool_timeout_s=None)`: the calls then run one at a time on the calling thread. `parallel_tools=False` with a timeout runs them one at a time, each in a worker thread.
 
 ## Memory tool
 
@@ -144,12 +137,15 @@ pip install -e ".[dev]"
 pytest --cov=claude_agent_kit
 ```
 
-46 tests, 85% coverage. Key tests:
+87 tests, 88% coverage. Key tests:
 
 - `test_cache.py::test_cost_summary_reflects_savings` — proves the cost math (>50% savings under production-shape input)
 - `test_agent.py::test_tool_use_loop` — proves the tool-call round trip handles `tool_use` -> `tool_result` -> final text correctly
 - `test_agent.py::test_max_iterations_safety` — proves the agent bails out of runaway tool loops
 - `test_compaction.py::test_compacts_when_over_budget` — proves the summarizer triggers under load
+- `test_compaction.py::TestToolPairs::test_fuzz_compaction_keeps_every_tool_result_with_its_tool_use` — 3,000 random histories; every compacted result passes the API's tool pairing rules
+- `test_agent.py::TestParallelToolCalls` — tool calls in one response meet at a barrier (they only pass if they run at the same time), and results keep call order
+- `test_agent.py::TestMaxTokensStop` — a reply cut off inside a tool call is answered with an error result, not run and not left unanswered
 - `test_benchmark.py` — smoke-runs the full cache benchmark to keep the hero number honest
 
 ## Docker
@@ -180,7 +176,7 @@ src/claude_agent_kit/
 benchmarks/
   cache_benchmark.py    # 10-turn run, cache on vs off
   results/
-    cache_benchmark.json
+    cache_benchmark.json  # the live run's record
 ```
 
 ## License

@@ -24,17 +24,30 @@ class CompactionPolicy:
     summary_prefix: str = "[earlier conversation summary]"
 
 
-def _char_count(messages: list[dict[str, Any]]) -> int:
+def _content_chars(content: Any) -> int:
+    if isinstance(content, str):
+        return len(content)
+    if not isinstance(content, list):
+        return 0
     total = 0
-    for m in messages:
-        content = m.get("content", "")
-        if isinstance(content, str):
-            total += len(content)
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict):
-                    total += len(block.get("text", "")) + len(str(block.get("input", "")))
+    for block in content:
+        if isinstance(block, dict):
+            total += len(block.get("text", "") or "")
+            if "input" in block:
+                total += len(str(block["input"]))
+            total += _content_chars(block.get("content"))  # tool_result payload
     return total
+
+
+def _char_count(messages: list[dict[str, Any]]) -> int:
+    return sum(_content_chars(m.get("content", "")) for m in messages)
+
+
+def _has_tool_result(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+    )
 
 
 def _default_summarize(turns: list[dict[str, Any]]) -> str:
@@ -49,10 +62,21 @@ def _default_summarize(turns: list[dict[str, Any]]) -> str:
         role = m.get("role", "?")
         content = m.get("content", "")
         if isinstance(content, list):
-            content = " ".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+            content = " ".join(_block_summary(b) for b in content if isinstance(b, dict))
         snippet = str(content).replace("\n", " ").strip()[:120]
         parts.append(f"- {role}: {snippet}")
     return "\n".join(parts)
+
+
+def _block_summary(block: dict[str, Any]) -> str:
+    if block.get("type") == "tool_use":
+        return f"[called {block.get('name', '?')}]"
+    if block.get("type") == "tool_result":
+        content = block.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+        return f"[tool result: {content}]"
+    return str(block.get("text", ""))
 
 
 def compact_history(
@@ -66,9 +90,12 @@ def compact_history(
     Returns (new_messages, did_compact). If not over budget, returns the
     input unchanged.
 
-    Compaction rule: keep the most recent keep_recent_turns user/assistant
-    pairs verbatim, summarize everything older into one synthetic user
-    message that begins with policy.summary_prefix.
+    Compaction rule: keep at least the most recent keep_recent_turns
+    messages verbatim, summarize everything older into one synthetic user
+    message that begins with policy.summary_prefix. The kept part never
+    starts on a tool_result: the API rejects one whose tool_use is not in the
+    message right before it, so the cut moves earlier to include that
+    tool_use.
     """
     policy = policy or CompactionPolicy()
     summarize = summarize or _default_summarize
@@ -76,13 +103,20 @@ def compact_history(
     if _char_count(messages) <= policy.max_history_chars:
         return messages, False
 
-    if len(messages) <= policy.keep_recent_turns:
+    keep = max(1, policy.keep_recent_turns)
+    if len(messages) <= keep:
         # History is short in *number of turns* but huge in *char count*.
         # We cannot compact further without losing the current question.
         return messages, False
 
-    head = messages[: -policy.keep_recent_turns]
-    tail = messages[-policy.keep_recent_turns :]
+    split = len(messages) - keep
+    while split > 0 and _has_tool_result(messages[split]):
+        split -= 1
+    if split == 0:
+        return messages, False
+
+    head = messages[:split]
+    tail = messages[split:]
     summary = summarize(head)
     synthetic = {
         "role": "user",

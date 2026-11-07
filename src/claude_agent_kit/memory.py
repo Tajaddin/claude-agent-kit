@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,14 +67,17 @@ class SqliteMemoryStore:
         memory(key TEXT PRIMARY KEY, value TEXT, updated_at REAL)
 
     Concurrent reads are safe via SQLite's default locking. Writes from
-    multiple processes would need WAL mode; left as an exercise.
+    multiple processes would need WAL mode; left as an exercise. Within one
+    process the store may be used from several threads (the agent runs tools
+    in worker threads); a lock serializes use of the shared connection.
     """
 
     path: Path | str = ":memory:"
 
     def __post_init__(self) -> None:
         self.path = str(self.path)
-        self._conn = sqlite3.connect(self.path)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS memory ("
             "key TEXT PRIMARY KEY, "
@@ -84,37 +88,44 @@ class SqliteMemoryStore:
         self._conn.commit()
 
     def save(self, key: str, value: str) -> None:
-        self._conn.execute(
-            "INSERT INTO memory(key, value, updated_at) VALUES(?, ?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-            (key, value, time.time()),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO memory(key, value, updated_at) VALUES(?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (key, value, time.time()),
+            )
+            self._conn.commit()
 
     def recall(self, key: str) -> str | None:
-        row = self._conn.execute("SELECT value FROM memory WHERE key=?", (key,)).fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM memory WHERE key=?", (key,)).fetchone()
         return row[0] if row else None
 
     def list_keys(self, prefix: str = "") -> list[str]:
-        if prefix:
-            rows = self._conn.execute(
-                "SELECT key FROM memory WHERE key LIKE ? ORDER BY key",
-                (f"{prefix}%",),
-            ).fetchall()
-        else:
-            rows = self._conn.execute("SELECT key FROM memory ORDER BY key").fetchall()
+        with self._lock:
+            if prefix:
+                # Not LIKE: it treats _ and % as wildcards and ignores ASCII case.
+                rows = self._conn.execute(
+                    "SELECT key FROM memory WHERE substr(key, 1, ?) = ? ORDER BY key",
+                    (len(prefix), prefix),
+                ).fetchall()
+            else:
+                rows = self._conn.execute("SELECT key FROM memory ORDER BY key").fetchall()
         return [r[0] for r in rows]
 
     def delete(self, key: str) -> bool:
-        cursor = self._conn.execute("DELETE FROM memory WHERE key=?", (key,))
-        self._conn.commit()
+        with self._lock:
+            cursor = self._conn.execute("DELETE FROM memory WHERE key=?", (key,))
+            self._conn.commit()
         return cursor.rowcount > 0
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     def dump(self) -> dict[str, str]:
-        rows = self._conn.execute("SELECT key, value FROM memory").fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT key, value FROM memory").fetchall()
         return {k: v for k, v in rows}
 
     def load_json(self, payload: str) -> int:
